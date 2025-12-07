@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8" />
+  <title>Joc Mașina Albastră 2D – Power-Ups Edition</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #111;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      user-select: none;
+      touch-action: none;
+      font-family: system-ui, sans-serif;
+      color: #fff;
+    }
+
+    #gameContainer {
+      position: relative;
+      border: 3px solid #444;
+      background: linear-gradient(#87cefa 0%, #87cefa 60%, #555 60%, #555 100%);
+    }
+
+    #score {
+      position: absolute;
+      top: 8px;
+      left: 12px;
+      font-size: 18px;
+      text-shadow: 0 0 4px #000;
+    }
+
+    #hint {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 14px;
+      opacity: 0.7;
+      text-shadow: 0 0 3px #000;
+    }
+
+    #pauseBtn {
+      position: absolute;
+      top: 8px;
+      right: 12px;
+      padding: 4px 10px;
+      font-size: 14px;
+      border: none;
+      border-radius: 4px;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      cursor: pointer;
+      display: none; /* apare după start */
+    }
+
+    #gameOverScreen,
+    #startScreen,
+    #pauseScreen {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      font-size: 22px;
+      text-align: center;
+      visibility: hidden;
+    }
+
+    #gameOverScreen button,
+    #startScreen button,
+    #pauseScreen button {
+      margin-top: 12px;
+      padding: 8px 18px;
+      border: none;
+      background: #1e90ff;
+      color: #fff;
+      font-size: 16px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+
+    #startScreen {
+      visibility: visible; /* la început vedem meniul de start */
+    }
+
+    #startTitle {
+      font-size: 28px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="gameContainer">
+    <canvas id="gameCanvas" width="900" height="500"></canvas>
+    <div id="score">Scor: 0</div>
+    <div id="hint">Trage de mașină cu degetul / mouse-ul ca s-o miști</div>
+    <button id="pauseBtn">⏸ Pauză</button>
+
+    <!-- Ecran START -->
+    <div id="startScreen">
+      <div id="startTitle">Mașina Albastră 2D</div>
+      <div style="font-size:16px; opacity:0.8;">Evită gropi, țepi, mașini, oameni și ia power-up-uri!</div>
+      <button id="startBtn">Începe jocul</button>
+    </div>
+
+    <!-- Ecran PAUZĂ -->
+    <div id="pauseScreen">
+      <div style="font-size:24px; margin-bottom:10px;">Pauză</div>
+      <div style="font-size:16px; opacity:0.8;">Apasă Continuă pentru a relua jocul</div>
+      <button id="resumeBtn">Continuă jocul</button>
+    </div>
+
+    <!-- Ecran GAME OVER -->
+    <div id="gameOverScreen">
+      <div id="gameOverText">Ai lovit ceva! 😅</div>
+      <div id="finalScore"></div>
+      <button id="restartBtn">Joacă din nou</button>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const scoreEl = document.getElementById("score");
+    const gameOverScreen = document.getElementById("gameOverScreen");
+    const finalScoreEl = document.getElementById("finalScore");
+    const restartBtn = document.getElementById("restartBtn");
+    const startScreen = document.getElementById("startScreen");
+    const startBtn = document.getElementById("startBtn");
+    const pauseScreen = document.getElementById("pauseScreen");
+    const resumeBtn = document.getElementById("resumeBtn");
+    const pauseBtn = document.getElementById("pauseBtn");
+
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const roadTop = H * 0.55;
+    const roadBottom = H * 0.95;
+    const midLineY = (roadTop + roadBottom) / 2;
+
+    const car = {
+      x: W * 0.25,
+      y: midLineY - 30,
+      w: 90,
+      h: 50,
+      color: "#007bff",
+    };
+
+    // Audio
+    const sndEngine = new Audio("engine.mp3");
+    sndEngine.loop = true;
+    sndEngine.volume = 0.25;
+
+    const sndHit = new Audio("hit.mp3");
+    sndHit.volume = 0.9;
+
+    const sndPower = new Audio("powerup.mp3");
+    sndPower.volume = 0.8;
+
+    let engineStarted = false;
+
+    // Power-up-uri active
+    let shield = false;
+    let slowMotion = 0;  // ms
+    let scoreBoost = 0;  // ms
+
+    let isDragging = false;
+    let dragOffsetX = 0;
+    let dragOffsetY = 0;
+
+    let obstacles = [];
+    let powerUps = [];
+    let buildings = [];
+
+    let lastSpawn = 0;
+    let lastPowerUp = 0;
+
+    let spawnInterval = 900;
+    let speed = 4;
+    let score = 0;
+
+    // running = jocul e în stare de rulare (nu în meniul de start, nu după game over)
+    // isPaused = pauză activă
+    let running = false;
+    let isPaused = false;
+
+    let lastTime = performance.now();
+    let roadOffset = 0;
+
+    function initBuildings() {
+      buildings = [];
+      let x = 0;
+      while (x < W + 200) {
+        const w = 50 + Math.random() * 80;
+        const h = 40 + Math.random() * 120;
+        const shade = 20 + Math.floor(Math.random() * 60);
+        buildings.push({
+          x,
+          w,
+          h,
+          color: `rgba(0,0,${shade},0.35)`
+        });
+        x += w + 20 + Math.random() * 40;
+      }
+    }
+
+    function resetGame() {
+      obstacles = [];
+      powerUps = [];
+      lastSpawn = 0;
+      lastPowerUp = 0;
+
+      speed = 4;
+      score = 0;
+
+      shield = false;
+      slowMotion = 0;
+      scoreBoost = 0;
+
+      running = true;
+      isPaused = false;
+
+      gameOverScreen.style.visibility = "hidden";
+      pauseScreen.style.visibility = "hidden";
+      pauseBtn.style.display = "block";
+
+      car.x = W * 0.25;
+      car.y = midLineY - 30;
+      lastTime = performance.now();
+
+      if (engineStarted) {
+        sndEngine.currentTime = 0;
+        sndEngine.play().catch(() => {});
+      }
+    }
+
+    // Obstacole
+    function spawnObstacle() {
+      const types = ["car", "hole", "spikes", "dog", "cat", "person"];
+      const type = types[Math.floor(Math.random() * types.length)];
+
+      const lanes = [
+        roadTop + 20,
+        (roadTop + midLineY) / 2,
+        midLineY - 20,
+        midLineY + 20,
+        (midLineY + roadBottom) / 2,
+        roadBottom - 20
+      ];
+
+      const laneY = lanes[Math.floor(Math.random() * lanes.length)];
+
+      // Direcții:
+      // - gropi, țepi, oameni, câini, pisici -> doar din dreapta spre stânga
+      // - mașinile -> sensuri corecte sus/jos
+      let dir;
+      if (["hole", "spikes", "dog", "cat", "person"].includes(type)) {
+        dir = 1; // din dreapta spre stânga
+      } else {
+        dir = (laneY < midLineY) ? 1 : -1;
+      }
+
+      let w, h, color, speedFactor;
+
+      switch (type) {
+        case "car":
+          w = Math.random() < 0.5 ? 110 : 70;
+          h = 40;
+          color = ["#ff5555","#ffcc00","#00cc88","#ff66cc"][Math.floor(Math.random()*4)];
+          speedFactor = Math.random() < 0.5 ? 1.0 : 1.2;
+          break;
+        case "hole":
+          w = 80; h = 20; color = "#222"; speedFactor = 0.4; break;
+        case "spikes":
+          w = 70; h = 25; color = "#999"; speedFactor = 0.5; break;
+        case "dog":
+        case "cat":
+          w = 30; h = 40;
+          color = type === "dog" ? "#c78a53" : "#888";
+          speedFactor = 0.8; 
+          break;
+        case "person":
+          w = 30; h = 40; color = "#ffe0bd"; speedFactor = 0.6; break;
+      }
+
+      const posY = laneY - h / 2;
+      const startX = dir === 1 ? W + 50 : -w - 50;
+
+      obstacles.push({ type, dir, x: startX, y: posY, w, h, color, speedFactor });
+    }
+
+    // Power-up-uri
+    function spawnPowerUp() {
+      const types = ["shield", "slow", "boost"];
+      const type = types[Math.floor(Math.random() * types.length)];
+
+      const lanes = [
+        roadTop + 20,
+        (roadTop + midLineY) / 2,
+        midLineY - 20,
+        midLineY + 20,
+        (midLineY + roadBottom) / 2,
+        roadBottom - 20
+      ];
+
+      const laneY = lanes[Math.floor(Math.random() * lanes.length)];
+      const dir = (laneY < midLineY) ? 1 : -1;
+
+      const size = 30;
+      const startX = dir === 1 ? W + 50 : -size - 50;
+
+      powerUps.push({
+        type,
+        dir,
+        x: startX,
+        y: laneY - size / 2,
+        w: size,
+        h: size
+      });
+    }
+
+    function collectPowerUp(p) {
+      if (p.type === "shield") shield = true;
+      if (p.type === "slow") slowMotion = 5000;
+      if (p.type === "boost") scoreBoost = 5000;
+      try {
+        sndPower.currentTime = 0;
+        sndPower.play();
+      } catch (e) {}
+    }
+
+    function rectsCollide(a, b) {
+      return (
+        a.x < b.x + b.w &&
+        a.x + a.w > b.x &&
+        a.y < b.y + b.h &&
+        a.y + a.h > b.y
+      );
+    }
+
+    function update(dt) {
+      // dacă nu e în joc sau e pauză, nu actualizăm fizica
+      if (!running || isPaused) return;
+
+      const timeFactor = slowMotion > 0 ? 0.5 : 1.0;
+      if (slowMotion > 0) slowMotion -= dt;
+      if (scoreBoost > 0) scoreBoost -= dt;
+
+      // Clădiri fundal
+      for (const b of buildings) {
+        b.x -= timeFactor * speed * 0.08;
+        if (b.x + b.w < -50) {
+          b.w = 50 + Math.random() * 80;
+          b.h = 40 + Math.random() * 120;
+          b.x = W + Math.random() * 150;
+        }
+      }
+
+      // Linie drum
+      roadOffset = (roadOffset + speed * 0.6 * timeFactor) % 35;
+
+      // Scor
+      score += dt * 0.01 * (scoreBoost > 0 ? 3 : 1);
+      scoreEl.textContent = "Scor: " + Math.floor(score);
+      scoreEl.style.color = scoreBoost > 0 ? "#ffd800" : "#ffffff";
+
+      // Creștere viteză în timp
+      speed += dt * 0.00004;
+
+      // Spawn obstacole
+      lastSpawn += dt * timeFactor;
+      if (lastSpawn > spawnInterval) {
+        spawnObstacle();
+        lastSpawn = 0;
+        spawnInterval = Math.max(400, spawnInterval - 5);
+      }
+
+      // Spawn power-up-uri
+      lastPowerUp += dt;
+      if (lastPowerUp > 8000) {
+        spawnPowerUp();
+        lastPowerUp = 0;
+      }
+
+      // Mișcare obstacole
+      for (const o of obstacles) {
+        o.x += -o.dir * speed * o.speedFactor * timeFactor;
+      }
+
+      obstacles = obstacles.filter(o => o.x + o.w > -100 && o.x < W + 100);
+
+      // Coliziuni cu obstacole
+      for (const o of obstacles) {
+        if (rectsCollide(car, o)) {
+          if (shield) {
+            shield = false;
+            obstacles = obstacles.filter(x => x !== o);
+          } else {
+            running = false;
+            pauseBtn.style.display = "none";
+            try {
+              sndEngine.pause();
+              sndHit.currentTime = 0;
+              sndHit.play();
+            } catch (e) {}
+            finalScoreEl.textContent = "Scor final: " + Math.floor(score);
+            gameOverScreen.style.visibility = "visible";
+          }
+          break;
+        }
+      }
+
+      // Mișcare power-up-uri
+      for (const p of powerUps) {
+        p.x += -p.dir * speed * 0.7 * timeFactor;
+      }
+
+      powerUps = powerUps.filter(p => p.x > -100 && p.x < W + 100);
+
+      // Coliziuni cu power-up-uri
+      for (const p of powerUps) {
+        if (rectsCollide(car, p)) {
+          collectPowerUp(p);
+          powerUps = powerUps.filter(x => x !== p);
+        }
+      }
+
+      // Limite mașină
+      const minY = roadTop - car.h / 2;
+      const maxY = roadBottom - car.h;
+      if (car.y < minY) car.y = minY;
+      if (car.y > maxY) car.y = maxY;
+
+      const minX = 60;
+      const maxX = W * 0.6;
+      if (car.x < minX) car.x = minX;
+      if (car.x > maxX) car.x = maxX;
+    }
+
+    function drawRoad() {
+      // cer + soare
+      ctx.save();
+      ctx.fillStyle = "#ffd966";
+      ctx.beginPath();
+      ctx.arc(W - 80, 80, 40, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // clădiri oraș
+      ctx.save();
+      for (const b of buildings) {
+        ctx.fillStyle = b.color;
+        ctx.fillRect(b.x, roadTop - b.h, b.w, b.h);
+      }
+      ctx.restore();
+
+      // asfalt
+      ctx.fillStyle = "#444";
+      ctx.fillRect(0, roadTop, W, roadBottom - roadTop);
+
+      // linia de mijloc
+      ctx.strokeStyle = "#fff";
+      ctx.setLineDash([20, 15]);
+      ctx.lineDashOffset = roadOffset;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(0, midLineY);
+      ctx.lineTo(W, midLineY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // margini
+      ctx.strokeStyle = "#ddd";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, roadTop);
+      ctx.lineTo(W, roadTop);
+      ctx.moveTo(0, roadBottom);
+      ctx.lineTo(W, roadBottom);
+      ctx.stroke();
+    }
+
+    function drawCar() {
+      ctx.save();
+      ctx.translate(car.x, car.y);
+
+      // scut
+      if (shield) {
+        ctx.strokeStyle = "rgba(0,150,255,0.6)";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(car.w/2, car.h/2, 45, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // corp mașină
+      ctx.fillStyle = car.color;
+      ctx.fillRect(0, 15, car.w, car.h - 15);
+      ctx.fillRect(15, 0, car.w * 0.55, 25);
+
+      // geam
+      ctx.fillStyle = "#cce7ff";
+      ctx.fillRect(20, 5, car.w * 0.3, 18);
+
+      // roți
+      ctx.fillStyle = "#111";
+      ctx.beginPath();
+      ctx.arc(20, car.h, 12, 0, Math.PI * 2);
+      ctx.arc(car.w - 20, car.h, 12, 0, Math.PI * 2);
+      ctx.fill();
+
+      // far
+      ctx.fillStyle = "#ffffaa";
+      ctx.fillRect(car.w - 8, 24, 6, 10);
+
+      ctx.restore();
+    }
+
+    function drawObstacle(o) {
+      ctx.save();
+      ctx.translate(o.x, o.y);
+
+      if (o.type === "hole") {
+        ctx.fillStyle = "#222";
+        ctx.fillRect(0, 0, o.w, o.h);
+
+      } else if (o.type === "spikes") {
+        ctx.fillStyle = o.color;
+        const spikesCount = 5;
+        const spikeW = o.w / spikesCount;
+        for (let i = 0; i < spikesCount; i++) {
+          ctx.beginPath();
+          ctx.moveTo(i * spikeW, o.h);
+          ctx.lineTo(i * spikeW + spikeW / 2, 0);
+          ctx.lineTo(i * spikeW + spikeW, o.h);
+          ctx.fill();
+        }
+
+      } else if (o.type === "dog" || o.type === "cat" || o.type === "person") {
+        ctx.fillStyle = o.color;
+        ctx.fillRect(5, o.h - 20, o.w - 10, 18);
+        ctx.fillRect(o.w / 3, 5, o.w / 3, 20);
+
+      } else if (o.type === "car") {
+        ctx.fillStyle = o.color;
+        ctx.fillRect(0, 10, o.w, o.h - 10);
+
+        ctx.fillStyle = "#eee";
+        ctx.fillRect(10, 0, o.w * 0.4, 15);
+
+        ctx.fillStyle = "#111";
+        ctx.beginPath();
+        ctx.arc(15, o.h, 9, 0, Math.PI * 2);
+        ctx.arc(o.w - 15, o.h, 9, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    function drawPowerUp(p) {
+      ctx.save();
+      ctx.translate(p.x, p.y);
+
+      if (p.type === "shield") {
+        ctx.fillStyle = "rgba(0,150,255,0.8)";
+        ctx.beginPath();
+        ctx.arc(p.w/2, p.h/2, p.w/2, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (p.type === "slow") {
+        ctx.fillStyle = "rgba(0,255,150,0.8)";
+        ctx.fillRect(0, 0, p.w, p.h);
+      } else if (p.type === "boost") {
+        ctx.fillStyle = "rgba(255,255,0,0.9)";
+        ctx.beginPath();
+        ctx.moveTo(p.w/2, 0);
+        ctx.lineTo(p.w, p.h);
+        ctx.lineTo(0, p.h);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    function draw(dt) {
+      ctx.clearRect(0, 0, W, H);
+      drawRoad();
+      for (const o of obstacles) drawObstacle(o);
+      for (const p of powerUps) drawPowerUp(p);
+      drawCar();
+
+      if (slowMotion > 0) {
+        ctx.save();
+        ctx.fillStyle = "rgba(0,80,120,0.25)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.restore();
+      }
+    }
+
+    function loop(timestamp) {
+      const dt = timestamp - lastTime;
+      lastTime = timestamp;
+      update(dt);
+      draw(dt);
+      requestAnimationFrame(loop);
+    }
+
+    // Input
+    function getPosFromEvent(e) {
+      const rect = canvas.getBoundingClientRect();
+      if (e.touches && e.touches.length > 0) {
+        return {
+          x: e.touches[0].clientX - rect.left,
+          y: e.touches[0].clientY - rect.top
+        };
+      } else {
+        return {
+          x: e.clientX - rect.left,
+          y: e.clientY - rect.top
+        };
+      }
+    }
+
+    function pointerDown(e) {
+      const pos = getPosFromEvent(e);
+
+      // motorul pornește la primul drag, după start
+      if (!engineStarted && running && !isPaused) {
+        engineStarted = true;
+        sndEngine.currentTime = 0;
+        sndEngine.play().catch(() => {});
+      }
+
+      if (pos.x >= car.x && pos.x <= car.x + car.w &&
+          pos.y >= car.y && pos.y <= car.y + car.h) {
+        isDragging = true;
+        dragOffsetX = pos.x - car.x;
+        dragOffsetY = pos.y - car.y;
+      }
+    }
+
+    function pointerMove(e) {
+      if (!isDragging) return;
+      e.preventDefault();
+      const pos = getPosFromEvent(e);
+      car.x = pos.x - dragOffsetX;
+      car.y = pos.y - dragOffsetY;
+    }
+
+    function pointerUp() {
+      isDragging = false;
+    }
+
+    canvas.addEventListener("mousedown", pointerDown);
+    canvas.addEventListener("mousemove", pointerMove);
+    window.addEventListener("mouseup", pointerUp);
+
+    canvas.addEventListener("touchstart", pointerDown, { passive: false });
+    canvas.addEventListener("touchmove", pointerMove, { passive: false });
+    window.addEventListener("touchend", pointerUp);
+    window.addEventListener("touchcancel", pointerUp);
+
+    // Butoane UI
+    startBtn.addEventListener("click", () => {
+      startScreen.style.visibility = "hidden";
+      resetGame();
+    });
+
+    restartBtn.addEventListener("click", () => {
+      resetGame();
+    });
+
+    pauseBtn.addEventListener("click", () => {
+      if (!running) return;
+      if (!isPaused) {
+        // intrăm în pauză
+        isPaused = true;
+        pauseScreen.style.visibility = "visible";
+        try { sndEngine.pause(); } catch(e) {}
+        pauseBtn.textContent = "▶ Continuă";
+      } else {
+        // ieșim din pauză
+        isPaused = false;
+        pauseScreen.style.visibility = "hidden";
+        if (engineStarted) {
+          sndEngine.play().catch(() => {});
+        }
+        pauseBtn.textContent = "⏸ Pauză";
+      }
+    });
+
+    resumeBtn.addEventListener("click", () => {
+      if (!running) return;
+      isPaused = false;
+      pauseScreen.style.visibility = "hidden";
+      pauseBtn.textContent = "⏸ Pauză";
+      if (engineStarted) {
+        sndEngine.play().catch(() => {});
+      }
+    });
+
+    // Pornire joc (numai loop grafic + fundal, jocul începe din startScreen)
+    initBuildings();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
